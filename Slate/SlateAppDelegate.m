@@ -32,7 +32,6 @@
 #import "SwitchOperation.h"
 #import "RunningApplications.h"
 #import "GridOperation.h"
-#import <Sparkle/SUUpdater.h>
 
 @implementation SlateAppDelegate
 
@@ -60,15 +59,11 @@ static EventHandlerRef modifiersEvent;
 }
 
 - (IBAction)relaunch {
-  NSString *launcherSource = [[NSBundle bundleForClass:[SUUpdater class]]  pathForResource:@"relaunch" ofType:@""];
-  NSString *launcherTarget = [NSTemporaryDirectory() stringByAppendingPathComponent:[launcherSource lastPathComponent]];
   NSString *appPath = [[NSBundle mainBundle] bundlePath];
   NSString *processID = [NSString stringWithFormat:@"%d", [[NSProcessInfo processInfo] processIdentifier]];
-
-  [[NSFileManager defaultManager] removeItemAtPath:launcherTarget error:NULL];
-  [[NSFileManager defaultManager] copyItemAtPath:launcherSource toPath:launcherTarget error:NULL];
-
-  [NSTask launchedTaskWithLaunchPath:launcherTarget arguments:[NSArray arrayWithObjects:appPath, processID, nil]];
+  // Wait for this process to exit, then reopen the app.
+  NSString *script = @"while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; /usr/bin/open \"$2\"";
+  [NSTask launchedTaskWithLaunchPath:@"/bin/sh" arguments:[NSArray arrayWithObjects:@"-c", script, @"sh", processID, appPath, nil]];
   [NSApp terminate:self];
 }
 
@@ -508,21 +503,17 @@ OSStatus OnModifiersChangedEvent(EventHandlerCallRef nextHandler, EventRef theEv
     keyUpLock = [[NSObject alloc] init];
   }
 
-  // Check if Accessibility API is enabled
-  if (!AXAPIEnabled()) {
-    NSAlert *alert = [SlateConfig warningAlertWithKeyEquivalents: [NSArray arrayWithObjects:@"Enable", @"Quit", nil]];
-    [alert setMessageText:[NSString stringWithFormat:@"Slate cannot run without \"Access for assistive devices\". Would you like to enable it?"]];
-    [alert setInformativeText:[NSString stringWithFormat:@"You may be prompted for your administrator password."]];
-    [alert setAlertStyle:NSCriticalAlertStyle];
-    NSInteger alertIndex = [alert runModal];
-    if (alertIndex == NSAlertFirstButtonReturn) {
-      SlateLogger(@"User wants to enable Access for assistive devices");
-      NSDictionary* errorDictionary;
-      NSAppleScript* applescript = [[NSAppleScript alloc] initWithSource:@"tell application \"System Events\" to set UI elements enabled to true"];
-      [applescript executeAndReturnError:&errorDictionary];
-    }
-    else if (alertIndex == NSAlertSecondButtonReturn) {
-      SlateLogger(@"User selected quit");
+  // Check if Accessibility API is enabled (prompts the user via System Settings if not)
+  NSDictionary *axOptions = [NSDictionary dictionaryWithObject:(id)kCFBooleanTrue forKey:(__bridge NSString *)kAXTrustedCheckOptionPrompt];
+  if (!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)axOptions)) {
+    SlateLogger(@"Accessibility access not granted; prompted user");
+    NSAlert *alert = [SlateConfig warningAlertWithKeyEquivalents: [NSArray arrayWithObjects:@"Relaunch", @"Quit", nil]];
+    [alert setMessageText:@"Slate needs Accessibility access to manage windows."];
+    [alert setInformativeText:@"Enable Slate in System Settings > Privacy & Security > Accessibility, then choose Relaunch."];
+    [alert setAlertStyle:NSAlertStyleCritical];
+    if ([alert runModal] == NSAlertFirstButtonReturn) {
+      [self relaunch];
+    } else {
       [NSApp terminate:nil];
     }
   }
